@@ -26,6 +26,11 @@ anyhow = "1"
 smallvec = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
+keyring = "4"
+directories = "6"
+toml = "1"
+serde = { version = "1", features = ["derive"] }
 
 [profile.release]
 lto = "thin"

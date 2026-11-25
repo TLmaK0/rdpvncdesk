@@ -1,7 +1,9 @@
 //! rdpvncdesk: a cross-platform RDP client built on IronRDP, winit and softbuffer.
 
 mod app;
+mod hosts;
 mod keymap;
+mod launcher;
 
 use anyhow::Context as _;
 use clap::Parser;
@@ -10,12 +12,13 @@ use ironrdp::client::rdp::{RdpClient, RdpOutputEvent};
 use ironrdp::pdu::rdp::capability_sets::MajorPlatformType;
 use winit::event_loop::EventLoop;
 
-/// Cross-platform RDP client.
+/// Cross-platform RDP client. Run without arguments to open the connection manager.
 #[derive(Parser, Debug)]
 #[command(version, about)]
 struct Cli {
     /// Server to connect to, as host or host:port (default port 3389).
-    destination: String,
+    /// If omitted, the connection manager window opens.
+    destination: Option<String>,
 
     /// User name.
     #[arg(short, long, env = "RDPVNCDESK_USER")]
@@ -36,6 +39,10 @@ struct Cli {
     /// Remote desktop height in pixels.
     #[arg(long, default_value_t = 800)]
     height: u16,
+
+    /// Read the password from the first line of standard input.
+    #[arg(long, conflicts_with = "password")]
+    password_stdin: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -48,17 +55,28 @@ fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
+    let Some(destination) = cli.destination.clone() else {
+        return launcher::run();
+    };
+
     let username = match cli.username {
         Some(u) => u,
         None => prompt("User: ")?,
     };
     let password = match cli.password {
         Some(p) => p,
+        None if cli.password_stdin => {
+            let mut line = String::new();
+            std::io::stdin()
+                .read_line(&mut line)
+                .context("reading password from stdin")?;
+            line.trim_end_matches(['\r', '\n']).to_owned()
+        }
         None => rpassword::prompt_password("Password: ").context("reading password")?,
     };
 
     let mut builder = ConfigBuilder::new()
-        .with_destination(Destination::new(cli.destination.clone()).context("invalid destination")?)
+        .with_destination(Destination::new(destination.clone()).context("invalid destination")?)
         .with_username(username)
         .with_password(password)
         .with_desktop_width(cli.width)
@@ -102,7 +120,7 @@ fn main() -> anyhow::Result<()> {
     let mut app = app::App::new(
         &event_loop,
         input_sender,
-        format!("rdpvncdesk - {}", cli.destination),
+        format!("rdpvncdesk - {destination}"),
         (cli.width, cli.height),
     )?;
     event_loop.run_app(&mut app)?;
