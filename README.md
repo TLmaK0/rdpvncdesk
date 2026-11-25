@@ -25,6 +25,31 @@ Hosts are saved in `hosts.toml` in the platform config directory:
 | macOS | `~/Library/Application Support/rdpvncdesk/hosts.toml` |
 | Windows | `%APPDATA%\rdpvncdesk\config\hosts.toml` |
 
+## rdp:// links
+
+rdpvncdesk can open `rdp://` links, both the simple form and Microsoft's:
+
+```
+rdp://server.example.com
+rdp://alice@server.example.com:3390
+rdp://full%20address=s:server.example.com:3389&username=s:CORP%5Calice
+```
+
+A link connects straight away **only** to a host already saved with a password in the keychain.
+Any other link just fills in the connection form, so a link from a web page can never make the client
+send stored credentials to a host you did not choose. Passwords inside URLs are ignored.
+
+Register it as the handler (this replaces any previous rdp:// handler, e.g. Microsoft Remote Desktop / Windows App):
+
+| OS | How |
+|---|---|
+| Windows | `rdpvncdesk --register-url-handler` (writes `HKCU\Software\Classes\rdp`, no admin needed) |
+| Linux | `rdpvncdesk --register-url-handler` (creates `~/.local/share/applications/rdpvncdesk.desktop` and runs `xdg-mime`) |
+| macOS | `packaging/macos/make-app.sh`, copy `target/release/rdpvncdesk.app` to `/Applications`, open it once, then run `/Applications/rdpvncdesk.app/Contents/MacOS/rdpvncdesk --register-url-handler` |
+
+On macOS links only work through the `.app` bundle (macOS delivers them as Apple Events, not arguments).
+CI builds the bundle for both Mac architectures.
+
 ## Command line
 
 ```sh
@@ -65,7 +90,9 @@ Like IronRDP's own viewer, the server's TLS certificate is **not validated** yet
 - [ ] Clipboard
 - [ ] Dynamic resolution on window resize
 - [x] Connection manager with saved hosts and keychain passwords
+- [x] rdp:// deep links
 - [ ] Windows: hide the console window when launched by double-click
+- [ ] Windows/Linux: reuse the running launcher for new links (today each link opens a new one)
 - [ ] VNC protocol
 
 ## License

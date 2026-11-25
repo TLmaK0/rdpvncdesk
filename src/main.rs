@@ -1,6 +1,7 @@
 //! rdpvncdesk: a cross-platform RDP client built on IronRDP, winit and softbuffer.
 
 mod app;
+mod deeplink;
 mod hosts;
 mod keymap;
 mod launcher;
@@ -43,6 +44,10 @@ struct Cli {
     /// Read the password from the first line of standard input.
     #[arg(long, conflicts_with = "password")]
     password_stdin: bool,
+
+    /// Register this program as the system handler for rdp:// links.
+    #[arg(long, exclusive = true)]
+    register_url_handler: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -55,9 +60,20 @@ fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
+    if cli.register_url_handler {
+        return deeplink::register();
+    }
+
     let Some(destination) = cli.destination.clone() else {
-        return launcher::run();
+        return launcher::run(None);
     };
+    // rdp://... links (Windows and Linux pass them as an argument) go through the launcher,
+    // which decides whether stored credentials may be used.
+    if deeplink::is_link(&destination) {
+        let link = deeplink::parse(&destination)
+            .with_context(|| format!("unsupported link: {destination}"))?;
+        return launcher::run(Some(link));
+    }
 
     let username = match cli.username {
         Some(u) => u,

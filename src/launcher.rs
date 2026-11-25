@@ -6,10 +6,11 @@
 
 use std::io::{Read as _, Write as _};
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{Mutex, OnceLock, mpsc};
 
 use eframe::egui;
 
+use crate::deeplink::{self, LinkTarget};
 use crate::hosts::{self, Host};
 
 /// Result of a finished session, reported back to the launcher.
@@ -19,7 +20,27 @@ struct SessionEnded {
     stderr: String,
 }
 
-pub fn run() -> anyhow::Result<()> {
+/// Links received from the OS (macOS Apple Events), waiting for the next frame.
+static INCOMING_LINKS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// Set once the window exists, so a link can wake the UI up.
+static REPAINT_CTX: OnceLock<egui::Context> = OnceLock::new();
+
+#[cfg(target_os = "macos")]
+fn queue_link(url: String) {
+    if let Ok(mut q) = INCOMING_LINKS.lock() {
+        q.push(url);
+    }
+    if let Some(ctx) = REPAINT_CTX.get() {
+        ctx.request_repaint();
+    }
+}
+
+pub fn run(initial_link: Option<LinkTarget>) -> anyhow::Result<()> {
+    // Must be installed before the event loop starts: when a link launches the app, macOS
+    // delivers it right after launch, before the window (and our App) exist.
+    #[cfg(target_os = "macos")]
+    deeplink::install_url_handler(queue_link);
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("rdpvncdesk")
@@ -30,7 +51,16 @@ pub fn run() -> anyhow::Result<()> {
     eframe::run_native(
         "rdpvncdesk",
         options,
-        Box::new(|_cc| Ok(Box::new(Launcher::new()))),
+        Box::new(move |cc| {
+            let _ = REPAINT_CTX.set(cc.egui_ctx.clone());
+            // AppKit replaces the GURL handler when it finishes launching; take it back now
+            // so links also reach an already running launcher.
+            #[cfg(target_os = "macos")]
+            deeplink::install_url_handler(queue_link);
+            let mut launcher = Launcher::new();
+            launcher.pending_link = initial_link;
+            Ok(Box::new(launcher))
+        }),
     )
     .map_err(|e| anyhow::anyhow!("launcher window: {e}"))
 }
@@ -46,6 +76,7 @@ struct Launcher {
     tx: mpsc::Sender<SessionEnded>,
     rx: mpsc::Receiver<SessionEnded>,
     running: usize,
+    pending_link: Option<LinkTarget>,
 }
 
 enum Status {
@@ -74,6 +105,7 @@ impl Launcher {
             tx,
             rx,
             running: 0,
+            pending_link: None,
         };
         if !me.hosts.is_empty() {
             me.select(0);
@@ -86,6 +118,58 @@ impl Launcher {
         self.form = self.hosts[index].clone();
         self.password = self.form.load_password().unwrap_or_default();
         self.remember_password = true;
+    }
+
+    /// Opens an rdp:// link.
+    ///
+    /// Connects straight away only to a host that is already saved with a password in the
+    /// keychain. Any other link just pre-fills the form: a link (e.g. from a web page) must
+    /// never make us send stored credentials to a host the user did not choose.
+    fn handle_link(&mut self, ctx: &egui::Context, link: LinkTarget) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        let wanted = deeplink::normalize_address(&link.address);
+        let found = self.hosts.iter().position(|h| {
+            deeplink::normalize_address(&h.address) == wanted
+                && (link.username.is_empty() || h.username.eq_ignore_ascii_case(&link.username))
+        });
+        if let Some(i) = found {
+            self.select(i);
+            if !self.password.is_empty() {
+                self.connect(ctx);
+                return;
+            }
+            self.status = Status::Info("Enter the password and press Connect".into());
+            return;
+        }
+        self.new_host();
+        self.form.address = link.address;
+        self.form.username = link.username;
+        self.form.domain = link.domain;
+        if let Some(w) = link.width {
+            self.form.width = w;
+        }
+        if let Some(h) = link.height {
+            self.form.height = h;
+        }
+        self.status =
+            Status::Info("New host from link: fill in user/password and press Connect".into());
+    }
+
+    fn poll_links(&mut self, ctx: &egui::Context) {
+        if let Some(link) = self.pending_link.take() {
+            self.handle_link(ctx, link);
+        }
+        let urls = INCOMING_LINKS
+            .lock()
+            .map(|mut q| std::mem::take(&mut *q))
+            .unwrap_or_default();
+        for url in urls {
+            tracing::info!(%url, "received link");
+            match deeplink::parse(&url) {
+                Some(link) => self.handle_link(ctx, link),
+                None => self.status = Status::Error(format!("Unsupported link: {url}")),
+            }
+        }
     }
 
     fn new_host(&mut self) {
@@ -257,6 +341,7 @@ impl eframe::App for Launcher {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll_sessions();
         let ctx = ui.ctx().clone();
+        self.poll_links(&ctx);
 
         egui::Panel::left("hosts")
             .resizable(true)
@@ -351,7 +436,7 @@ impl eframe::App for Launcher {
 
             ui.add_space(12.0);
             ui.horizontal(|ui| {
-                if ui.button("▶ Connect").clicked() {
+                if ui.button("Connect").clicked() {
                     self.connect(&ctx);
                 }
                 if ui.button("Save").clicked() {

@@ -32,6 +32,11 @@ directories = "6"
 toml = "1"
 serde = { version = "1", features = ["derive"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Receive rdp:// URLs, which macOS delivers as Apple Events rather than argv.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSAppleEventManager", "NSAppleEventDescriptor", "NSString"] }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
