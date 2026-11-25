@@ -12,7 +12,7 @@ categories = ["network-programming", "gui"]
 
 [dependencies]
 # RDP protocol stack (pure Rust, same code on every OS)
-ironrdp = { version = "0.17", features = ["client", "rustls", "input", "connector", "pdu", "session"] }
+ironrdp = { version = "0.17", features = ["client", "native-tls", "input", "connector", "pdu", "session"] }
 
 # Window and software rendering
 winit = { version = "0.30", features = ["rwh_06"] }

@@ -78,7 +78,7 @@ Requires Rust 1.94+.
 cargo build --release
 ```
 
-Linux also needs: `libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev libegl1-mesa-dev` (Debian/Ubuntu names).
+Linux also needs: `libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev libegl1-mesa-dev libssl-dev pkg-config` (Debian/Ubuntu names).
 
 Prebuilt binaries for every OS are produced by GitHub Actions on each push (artifacts) and attached to releases for `v*` tags.
 
