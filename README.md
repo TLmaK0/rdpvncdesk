@@ -6,6 +6,8 @@ The RDP protocol is handled by [IronRDP](https://github.com/Devolutions/IronRDP)
 [winit](https://github.com/rust-windowing/winit) and drawing by [softbuffer](https://github.com/rust-windowing/softbuffer).
 No platform-specific code paths in this repo: the same source compiles on all three systems.
 
+**[Download the latest release](https://github.com/TLmaK0/rdpvncdesk/releases/latest)** (Windows, Linux, macOS Apple Silicon and Intel).
+
 > Status: early. Connect, view the remote desktop, keyboard and mouse work. VNC support is planned (hence the name).
 
 ## Connection manager
