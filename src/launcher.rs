@@ -103,6 +103,51 @@ enum Status {
     SessionError { summary: String, log: String },
 }
 
+/// Standard remote desktop sizes offered in the Resolution dropdown (issue #13).
+const RESOLUTIONS: &[(u16, u16, &str)] = &[
+    (1024, 768, "4:3"),
+    (1280, 720, "16:9 · HD"),
+    (1280, 800, "16:10"),
+    (1280, 1024, "5:4"),
+    (1366, 768, "16:9"),
+    (1440, 900, "16:10"),
+    (1600, 900, "16:9"),
+    (1680, 1050, "16:10"),
+    (1920, 1080, "16:9 · Full HD"),
+    (1920, 1200, "16:10"),
+    (2560, 1080, "21:9"),
+    (2560, 1440, "16:9 · QHD"),
+    (2560, 1600, "16:10"),
+    (3440, 1440, "21:9"),
+    (3840, 2160, "16:9 · 4K"),
+];
+
+fn resolution_label(width: u16, height: u16) -> String {
+    match RESOLUTIONS.iter().find(|(w, h, _)| *w == width && *h == height) {
+        Some((w, h, ratio)) => format!("{w} × {h}  ({ratio})"),
+        None => format!("{width} × {height}  (custom)"),
+    }
+}
+
+/// One dropdown for the remote desktop size. A host saved with a non-standard size keeps it.
+fn resolution_picker(ui: &mut egui::Ui, width: &mut u16, height: &mut u16) {
+    egui::ComboBox::from_id_salt("resolution")
+        .width(ui.available_width())
+        .selected_text(resolution_label(*width, *height))
+        .show_ui(ui, |ui| {
+            if !RESOLUTIONS.iter().any(|(w, h, _)| w == width && h == height) {
+                let _ = ui.selectable_label(true, resolution_label(*width, *height));
+            }
+            for &(w, h, _) in RESOLUTIONS {
+                let selected = *width == w && *height == h;
+                if ui.selectable_label(selected, resolution_label(w, h)).clicked() {
+                    *width = w;
+                    *height = h;
+                }
+            }
+        });
+}
+
 /// Executable used for sessions. On macOS, inside the app bundle, that's the helper app
 /// (Contents/Helpers/rdpvncdesk Session.app, issue #3): a session started from the main
 /// executable makes macOS think the app is already open, so the manager can't be reopened.
@@ -549,11 +594,7 @@ impl eframe::App for Launcher {
                     theme::caption(&mut cols[0], "Password");
                     cols[0].add_enabled(nla, field(&mut self.password).password(true).hint_text(password_hint));
                     theme::caption(&mut cols[1], "Resolution");
-                    cols[1].horizontal(|ui| {
-                        ui.add(egui::DragValue::new(&mut self.form.width).range(640..=7680));
-                        ui.label("×");
-                        ui.add(egui::DragValue::new(&mut self.form.height).range(480..=4320));
-                    });
+                    resolution_picker(&mut cols[1], &mut self.form.width, &mut self.form.height);
                 });
 
                 ui.add_space(4.0);
@@ -724,6 +765,12 @@ fn screenshot_for_debugging(ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::strip_ansi;
+
+    #[test]
+    fn resolution_labels() {
+        assert_eq!(super::resolution_label(1920, 1080), "1920 × 1080  (16:9 · Full HD)");
+        assert_eq!(super::resolution_label(1234, 777), "1234 × 777  (custom)");
+    }
 
     #[test]
     fn strips_colour_codes() {
