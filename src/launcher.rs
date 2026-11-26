@@ -66,6 +66,9 @@ pub fn run(initial_link: Option<LinkTarget>) -> anyhow::Result<()> {
 }
 
 struct Launcher {
+    /// Credentials dialog shown at connect time (issue #5). `Some(true)` on the frame it opens,
+    /// to focus the password field once.
+    ask_password: Option<bool>,
     hosts: Vec<Host>,
     selected: Option<usize>,
     /// Form being edited (copy of the selected host, or a new one).
@@ -136,6 +139,7 @@ impl Launcher {
             ),
         };
         let mut me = Self {
+            ask_password: None,
             hosts,
             selected: None,
             form: Host::default(),
@@ -318,7 +322,9 @@ impl Launcher {
         } else if let Some(saved) = self.form.load_password() {
             saved
         } else {
-            self.status = Status::Error("Password is required (or turn off NLA)".into());
+            // Like mstsc: ask for the password now instead of failing (issue #5).
+            self.ask_password = Some(true);
+            self.status = Status::None;
             return;
         };
 
@@ -548,7 +554,9 @@ impl eframe::App for Launcher {
 
             ui.add_space(12.0);
             ui.horizontal(|ui| {
-                if ui.button("Connect").on_hover_text("Return").clicked() || enter_pressed {
+                if ui.button("Connect").on_hover_text("Return").clicked()
+                    || (enter_pressed && self.ask_password.is_none())
+                {
                     self.connect(&ctx);
                 }
                 if ui.button("Save").clicked() {
@@ -578,6 +586,58 @@ impl eframe::App for Launcher {
                 ui.weak(format!("Open sessions: {}", self.running));
             }
         });
+
+        if self.ask_password.is_some() {
+            self.password_dialog(&ctx, enter_pressed);
+        }
+    }
+}
+
+impl Launcher {
+    /// Asks for the password at connect time when NLA is on and none is saved (issue #5).
+    fn password_dialog(&mut self, ctx: &egui::Context, enter_pressed: bool) {
+        let focus_password = self.ask_password == Some(true);
+        self.ask_password = Some(false);
+        let mut connect = enter_pressed;
+        let mut cancel = false;
+        let modal = egui::Modal::new(egui::Id::unique("password-dialog")).show(ctx, |ui| {
+            ui.set_width(320.0);
+            ui.heading(format!("Sign in to {}", self.form.label()));
+            ui.add_space(8.0);
+            egui::Grid::new("password-dialog-grid")
+                .num_columns(2)
+                .spacing([12.0, 8.0])
+                .show(ui, |ui| {
+                    ui.label("User");
+                    ui.text_edit_singleline(&mut self.form.username);
+                    ui.end_row();
+                    ui.label("Domain");
+                    ui.add(egui::TextEdit::singleline(&mut self.form.domain).hint_text("optional"));
+                    ui.end_row();
+                    ui.label("Password");
+                    let field = ui.add(egui::TextEdit::singleline(&mut self.password).password(true));
+                    if focus_password {
+                        field.request_focus();
+                    }
+                    ui.end_row();
+                });
+            ui.checkbox(
+                &mut self.form.remember_password,
+                "Remember password in system keychain",
+            );
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                connect |= ui.button("Connect").clicked();
+                cancel |= ui.button("Cancel").clicked();
+            });
+        });
+        if cancel || modal.should_close() {
+            self.ask_password = None;
+            self.password.clear();
+        } else if connect && !self.password.is_empty() {
+            self.ask_password = None;
+            self.connect(ctx);
+        }
     }
 }
 
