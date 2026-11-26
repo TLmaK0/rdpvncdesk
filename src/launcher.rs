@@ -70,8 +70,9 @@ struct Launcher {
     selected: Option<usize>,
     /// Form being edited (copy of the selected host, or a new one).
     form: Host,
+    /// Password typed in the form. Empty means "use the one saved in the keychain": the keychain
+    /// is only read when connecting, so opening the launcher never triggers an OS prompt.
     password: String,
-    remember_password: bool,
     status: Status,
     tx: mpsc::Sender<SessionEnded>,
     rx: mpsc::Receiver<SessionEnded>,
@@ -83,6 +84,45 @@ enum Status {
     None,
     Info(String),
     Error(String),
+    /// A session that failed: the last line is shown, the whole log can be copied.
+    SessionError { summary: String, log: String },
+}
+
+/// Executable used for sessions. On macOS, inside the app bundle, that's the helper app
+/// (Contents/Helpers/rdpvncdesk Session.app, issue #3): a session started from the main
+/// executable makes macOS think the app is already open, so the manager can't be reopened.
+fn session_exe() -> std::io::Result<std::path::PathBuf> {
+    let exe = std::env::current_exe()?;
+    if cfg!(target_os = "macos")
+        && let Some(contents) = exe.parent().and_then(|macos| macos.parent())
+    {
+        let helper = contents.join("Helpers/rdpvncdesk Session.app/Contents/MacOS/rdpvncdesk");
+        if helper.is_file() {
+            return Ok(helper);
+        }
+    }
+    Ok(exe)
+}
+
+/// Removes ANSI colour codes (the session's log output is coloured).
+fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            // ESC [ ... final byte in 0x40..=0x7E
+            if chars.next() == Some('[') {
+                for c in chars.by_ref() {
+                    if ('\u{40}'..='\u{7e}').contains(&c) {
+                        break;
+                    }
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 impl Launcher {
@@ -100,7 +140,6 @@ impl Launcher {
             selected: None,
             form: Host::default(),
             password: String::new(),
-            remember_password: true,
             status,
             tx,
             rx,
@@ -116,15 +155,14 @@ impl Launcher {
     fn select(&mut self, index: usize) {
         self.selected = Some(index);
         self.form = self.hosts[index].clone();
-        self.password = self.form.load_password().unwrap_or_default();
-        self.remember_password = true;
+        self.password.clear();
     }
 
     /// Opens an rdp:// link.
     ///
-    /// Connects straight away only to a host that is already saved with a password in the
-    /// keychain. Any other link just pre-fills the form: a link (e.g. from a web page) must
-    /// never make us send stored credentials to a host the user did not choose.
+    /// A saved host is connected to straight away, without asking for anything. An unknown host
+    /// only pre-fills the form (with NLA off): a link (e.g. from a web page) must never make us
+    /// send stored credentials to, or open a sign-in screen from, a host the user did not choose.
     fn handle_link(&mut self, ctx: &egui::Context, link: LinkTarget) {
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         let wanted = deeplink::normalize_address(&link.address);
@@ -134,11 +172,12 @@ impl Launcher {
         });
         if let Some(i) = found {
             self.select(i);
-            if !self.password.is_empty() {
-                self.connect(ctx);
-                return;
-            }
-            self.status = Status::Info("Enter the password and press Connect".into());
+            // Links never stop to ask for credentials: NLA with the saved password if there is
+            // one, otherwise without NLA for this session only (the host's setting is kept).
+            // Read the keychain once and hand the password over (issue #2: it was read
+            // here and again in launch(), so macOS asked twice).
+            let saved = if self.form.nla { self.form.load_password() } else { None };
+            self.launch(ctx, saved.is_some(), saved);
             return;
         }
         self.new_host();
@@ -151,8 +190,13 @@ impl Launcher {
         if let Some(h) = link.height {
             self.form.height = h;
         }
-        self.status =
-            Status::Info("New host from link: fill in user/password and press Connect".into());
+        // No NLA needed for links, but an unknown host is never connected to automatically:
+        // a web page could otherwise open a fake Windows sign-in screen to phish the password.
+        self.form.nla = false;
+        self.status = Status::Info(
+            "New host from link: check the address and press Connect to sign in on its screen"
+                .into(),
+        );
     }
 
     fn poll_links(&mut self, ctx: &egui::Context) {
@@ -176,14 +220,13 @@ impl Launcher {
         self.selected = None;
         self.form = Host::default();
         self.password.clear();
-        self.remember_password = true;
     }
 
     fn validate(&self) -> Result<(), String> {
         if self.form.address.trim().is_empty() {
             return Err("Host is required".into());
         }
-        if self.form.username.trim().is_empty() {
+        if self.form.nla && self.form.username.trim().is_empty() {
             return Err("User is required".into());
         }
         Ok(())
@@ -201,6 +244,10 @@ impl Launcher {
         if let Some(i) = self.selected {
             let old = &self.hosts[i];
             if old.address != self.form.address || old.username != self.form.username {
+                // The keychain entry is keyed by user@address: carry the password over.
+                if self.password.is_empty() && self.form.remember_password {
+                    self.password = old.load_password().unwrap_or_default();
+                }
                 old.delete_password();
             }
             self.hosts[i] = self.form.clone();
@@ -214,14 +261,18 @@ impl Launcher {
             return false;
         }
 
-        if self.remember_password && !self.password.is_empty() {
-            if let Err(e) = self.form.store_password(&self.password) {
-                self.status = Status::Error(format!("Saved host, but not the password: {e:#}"));
-                return true;
-            }
-        } else {
+        if !self.form.nla {
+            // Leave the keychain alone: the password is not used without NLA, and keeping it
+            // means switching NLA back on doesn't require typing it again.
+        } else if !self.form.remember_password {
             self.form.delete_password();
+        } else if !self.password.is_empty()
+            && let Err(e) = self.form.store_password(&self.password)
+        {
+            self.status = Status::Error(format!("Saved host, but not the password: {e:#}"));
+            return true;
         }
+        // Remember checked and nothing typed: keep whatever the keychain already has.
         self.status = Status::Info(format!("Saved \"{}\"", self.form.label()));
         true
     }
@@ -243,32 +294,47 @@ impl Launcher {
     }
 
     fn connect(&mut self, ctx: &egui::Context) {
+        let nla = self.form.nla;
+        self.launch(ctx, nla, None);
+    }
+
+    /// Saves the form and starts a session, using NLA or not for this session only.
+    /// `saved_password`: already read from the keychain by the caller, so it isn't read twice.
+    fn launch(&mut self, ctx: &egui::Context, nla: bool, saved_password: Option<String>) {
         if let Err(e) = self.validate() {
             self.status = Status::Error(e);
-            return;
-        }
-        if self.password.is_empty() {
-            self.status = Status::Error("Password is required".into());
             return;
         }
         if !self.save() {
             return;
         }
+        // Read the keychain only now, at connect time.
+        let password = if !nla {
+            String::new()
+        } else if let Some(saved) = saved_password {
+            saved
+        } else if !self.password.is_empty() {
+            self.password.clone()
+        } else if let Some(saved) = self.form.load_password() {
+            saved
+        } else {
+            self.status = Status::Error("Password is required (or turn off NLA)".into());
+            return;
+        };
 
-        let exe = match std::env::current_exe() {
+        let exe = match session_exe() {
             Ok(p) => p,
             Err(e) => {
                 self.status = Status::Error(format!("Cannot locate own executable: {e}"));
                 return;
             }
         };
-        let host = self.form.clone();
+        let mut host = self.form.clone();
+        host.nla = nla;
         let mut cmd = Command::new(exe);
         cmd.arg(&host.address)
-            .args(["--username", &host.username])
             .args(["--width", &host.width.to_string()])
             .args(["--height", &host.height.to_string()])
-            .arg("--password-stdin")
             // Make sure values from the launcher's environment don't override the form.
             .env_remove("RDPVNCDESK_PASSWORD")
             .env_remove("RDPVNCDESK_USER")
@@ -276,6 +342,14 @@ impl Launcher {
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
+        if !host.username.is_empty() {
+            cmd.args(["--username", &host.username]);
+        }
+        if host.nla {
+            cmd.arg("--password-stdin");
+        } else {
+            cmd.arg("--no-nla");
+        }
         if !host.domain.trim().is_empty() {
             cmd.args(["--domain", host.domain.trim()]);
         }
@@ -294,8 +368,10 @@ impl Launcher {
             }
         };
         // Password goes through a pipe: never on the command line or in the environment.
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = writeln!(stdin, "{}", self.password);
+        if let Some(mut stdin) = child.stdin.take()
+            && host.nla
+        {
+            let _ = writeln!(stdin, "{password}");
         }
 
         self.running += 1;
@@ -324,14 +400,16 @@ impl Launcher {
             self.status = if ended.success {
                 Status::Info(format!("Session with {} closed", ended.label))
             } else {
-                let detail = ended
-                    .stderr
+                let log = strip_ansi(&ended.stderr).trim().to_owned();
+                let detail = log
                     .lines()
                     .rev()
                     .find(|l| !l.trim().is_empty())
-                    .unwrap_or("unknown error")
-                    .to_owned();
-                Status::Error(format!("{}: {detail}", ended.label))
+                    .unwrap_or("unknown error");
+                Status::SessionError {
+                    summary: format!("{}: {detail}", ended.label),
+                    log,
+                }
             };
         }
     }
@@ -342,6 +420,8 @@ impl eframe::App for Launcher {
         self.poll_sessions();
         let ctx = ui.ctx().clone();
         self.poll_links(&ctx);
+        // Return does what the Connect button does (also from inside a text field).
+        let enter_pressed = ctx.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.is_none());
 
         egui::Panel::left("hosts")
             .resizable(true)
@@ -407,21 +487,53 @@ impl eframe::App for Launcher {
                     ui.end_row();
 
                     ui.label("User");
-                    ui.text_edit_singleline(&mut self.form.username);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.form.username)
+                            .hint_text(if self.form.nla { "" } else { "optional" }),
+                    );
                     ui.end_row();
 
                     ui.label("Domain");
                     ui.add(egui::TextEdit::singleline(&mut self.form.domain).hint_text("optional"));
                     ui.end_row();
 
+                    ui.label("");
+                    let toggled = ui
+                        .checkbox(&mut self.form.nla, "Use NLA (send credentials before connecting)")
+                        .on_hover_text(
+                            "Turn off to sign in on the server's own Windows screen instead. \
+                             Only works if the server allows it, and is less safe: the password \
+                             is typed into the remote screen.",
+                        )
+                        .changed();
+                    if toggled {
+                        self.password.clear();
+                    }
+                    ui.end_row();
+
+                    let nla = self.form.nla;
                     ui.label("Password");
-                    ui.add(egui::TextEdit::singleline(&mut self.password).password(true));
+                    ui.add_enabled(
+                        nla,
+                        egui::TextEdit::singleline(&mut self.password)
+                            .password(true)
+                            .hint_text(if !nla {
+                                "typed on the server's screen"
+                            } else if self.selected.is_some() {
+                                "empty = use saved password"
+                            } else {
+                                ""
+                            }),
+                    );
                     ui.end_row();
 
                     ui.label("");
-                    ui.checkbox(
-                        &mut self.remember_password,
-                        "Remember password in system keychain",
+                    ui.add_enabled(
+                        nla,
+                        egui::Checkbox::new(
+                            &mut self.form.remember_password,
+                            "Remember password in system keychain",
+                        ),
                     );
                     ui.end_row();
 
@@ -436,7 +548,7 @@ impl eframe::App for Launcher {
 
             ui.add_space(12.0);
             ui.horizontal(|ui| {
-                if ui.button("Connect").clicked() {
+                if ui.button("Connect").on_hover_text("Return").clicked() || enter_pressed {
                     self.connect(&ctx);
                 }
                 if ui.button("Save").clicked() {
@@ -454,12 +566,47 @@ impl eframe::App for Launcher {
                     ui.label(msg);
                 }
                 Status::Error(msg) => {
-                    ui.colored_label(ui.visuals().error_fg_color, msg);
+                    let msg = msg.clone();
+                    error_with_copy(ui, &msg, &msg);
+                }
+                Status::SessionError { summary, log } => {
+                    let (summary, log) = (summary.clone(), log.clone());
+                    error_with_copy(ui, &summary, if log.is_empty() { &summary } else { &log });
                 }
             }
             if self.running > 0 {
                 ui.weak(format!("Open sessions: {}", self.running));
             }
         });
+    }
+}
+
+/// Error text with a button that copies `copy` (e.g. the full session log) to the clipboard.
+fn error_with_copy(ui: &mut egui::Ui, shown: &str, copy: &str) {
+    ui.horizontal_wrapped(|ui| {
+        ui.colored_label(ui.visuals().error_fg_color, shown);
+        let copied_id = ui.scope_id().with("error-copied");
+        let copied = ui.data(|d| d.get_temp::<String>(copied_id)).as_deref() == Some(copy);
+        if ui
+            .small_button(if copied { "Copied" } else { "Copy" })
+            .on_hover_text("Copy the full error to the clipboard")
+            .clicked()
+        {
+            ui.ctx().copy_text(copy.to_owned());
+            ui.data_mut(|d| d.insert_temp(copied_id, copy.to_owned()));
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_ansi;
+
+    #[test]
+    fn strips_colour_codes() {
+        assert_eq!(
+            strip_ansi("\u{1b}[2m2026\u{1b}[0m \u{1b}[31mERROR\u{1b}[0m failed"),
+            "2026 ERROR failed"
+        );
     }
 }

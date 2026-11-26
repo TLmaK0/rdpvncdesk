@@ -5,6 +5,8 @@ mod deeplink;
 mod hosts;
 mod keymap;
 mod launcher;
+mod logfile;
+mod phase;
 
 use anyhow::Context as _;
 use clap::Parser;
@@ -45,20 +47,56 @@ struct Cli {
     #[arg(long, conflicts_with = "password")]
     password_stdin: bool,
 
+    /// Connect without Network Level Authentication (NLA): no credentials are sent up front and
+    /// the server shows its own Windows sign-in screen. Only works if the server allows it.
+    /// Less safe: the password is then typed into the remote screen.
+    #[arg(long, conflicts_with_all = ["password", "password_stdin"])]
+    no_nla: bool,
+
     /// Register this program as the system handler for rdp:// links.
     #[arg(long, exclusive = true)]
     register_url_handler: bool,
 }
 
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_env("RDPVNCDESK_LOG")
-                .unwrap_or_else(|_| "warn".into()),
-        )
-        .init();
-
     let cli = Cli::parse();
+
+    // Sessions (a destination that isn't an rdp:// link) also log to a file.
+    let session_log = cli
+        .destination
+        .as_deref()
+        .filter(|d| !deeplink::is_link(d))
+        .and_then(logfile::create);
+    {
+        use tracing_subscriber::prelude::*;
+        let log_filter = tracing_subscriber::EnvFilter::try_from_env("RDPVNCDESK_LOG")
+            .unwrap_or_else(|_| "warn".into());
+        let file_layer = session_log.as_ref().and_then(|(file, _)| {
+            let file = file.try_clone().ok()?;
+            Some(
+                tracing_subscriber::fmt::layer()
+                    .with_ansi(false)
+                    .with_writer(std::sync::Mutex::new(file))
+                    .with_filter(tracing_subscriber::EnvFilter::new(
+                        // ironrdp_async debug only names the connection steps. Don't raise
+                        // ironrdp_connector: at debug it logs the Client Info, password included.
+                        "info,rdpvncdesk=debug,ironrdp_async=debug",
+                    )),
+            )
+        });
+        tracing_subscriber::registry()
+            .with(tracing_subscriber::fmt::layer().with_filter(log_filter))
+            .with(file_layer)
+            // Always sees IronRDP's connection steps, whatever the log level.
+            .with(phase::PhaseTracker.with_filter(
+                tracing_subscriber::filter::Targets::new()
+                    .with_target("ironrdp_async", tracing::Level::DEBUG),
+            ))
+            .init();
+    }
+    if let Some((_, path)) = &session_log {
+        tracing::info!(version = env!("CARGO_PKG_VERSION"), log = %path.display(), "session log");
+    }
 
     if cli.register_url_handler {
         return deeplink::register();
@@ -77,10 +115,13 @@ fn main() -> anyhow::Result<()> {
 
     let username = match cli.username {
         Some(u) => u,
+        // Without NLA the user name is optional: it only pre-fills the server's sign-in screen.
+        None if cli.no_nla => String::new(),
         None => prompt("User: ")?,
     };
     let password = match cli.password {
         Some(p) => p,
+        None if cli.no_nla => String::new(),
         None if cli.password_stdin => {
             let mut line = String::new();
             std::io::stdin()
@@ -101,7 +142,12 @@ fn main() -> anyhow::Result<()> {
         // Same hard-coded value as FreeRDP and IronRDP's own viewer.
         .with_client_dir("C:\\Windows\\System32\\mstscax.dll")
         .with_client_name(client_name())
-        .with_platform(current_platform());
+        .with_platform(current_platform())
+        .with_credssp(!cli.no_nla)
+        // ironrdp-client 0.1.0 drops the bulk decompressor on Deactivation-Reactivation (which
+        // GNOME Remote Desktop does right after connecting), so every later compressed update
+        // is misread. Without advertising compression the server never compresses.
+        .with_compression(false);
     if let Some(domain) = cli.domain {
         builder = builder.with_domain(domain);
     }
@@ -128,6 +174,27 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
+    // A server that stops answering mid-connection would otherwise leave a black window forever.
+    std::thread::spawn(|| {
+        std::thread::sleep(CONNECT_TIMEOUT);
+        if !phase::is_connected() {
+            let step = phase::last_state();
+            let msg = if step == "Credssp" {
+                "Connection timed out while signing in (NLA): the server stopped answering. \
+                 Check user, password and domain"
+                    .to_owned()
+            } else {
+                format!(
+                    "Connection timed out: the server stopped answering during step \"{}\"",
+                    if step.is_empty() { "start" } else { &step }
+                )
+            };
+            tracing::error!(step, "{msg}");
+            eprintln!("{msg}");
+            std::process::exit(1);
+        }
+    });
+
     std::thread::spawn(move || {
         rt.block_on(client.run());
         let _ = rt.block_on(forwarder);
@@ -143,6 +210,8 @@ fn main() -> anyhow::Result<()> {
 
     std::process::exit(app.exit_code());
 }
+
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 fn prompt(label: &str) -> anyhow::Result<String> {
     use std::io::Write as _;

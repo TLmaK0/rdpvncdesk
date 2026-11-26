@@ -26,7 +26,7 @@ anyhow = "1"
 smallvec = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "clipboard", "wayland", "x11"] }
 keyring = "4"
 directories = "6"
 toml = "1"
@@ -41,3 +41,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# Patched copy, see the "rdpvncdesk patch" comments in vendor/ironrdp-connector (issue #1).
+[patch.crates-io]
+ironrdp-connector = { path = "vendor/ironrdp-connector" }
