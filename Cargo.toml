@@ -12,7 +12,7 @@ categories = ["network-programming", "gui"]
 
 [dependencies]
 # RDP protocol stack (pure Rust, same code on every OS)
-ironrdp = { version = "0.17", features = ["client", "native-tls", "input", "connector", "pdu", "session"] }
+ironrdp = { version = "0.17", features = ["client", "client-clipboard", "native-tls", "input", "connector", "pdu", "session"] }
 
 # Window and software rendering
 winit = { version = "0.30", features = ["rwh_06"] }
@@ -26,7 +26,7 @@ anyhow = "1"
 smallvec = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "clipboard", "wayland", "x11"] }
 keyring = "4"
 directories = "6"
 toml = "1"
@@ -37,7 +37,16 @@ serde = { version = "1", features = ["derive"] }
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSAppleEventManager", "NSAppleEventDescriptor", "NSString"] }
 
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+window-vibrancy = "0.8.1"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# Patched copy, see the "rdpvncdesk patch" comments in vendor/ironrdp-connector (issue #1).
+[patch.crates-io]
+ironrdp-connector = { path = "vendor/ironrdp-connector" }
+ironrdp-client = { path = "vendor/ironrdp-client" }
+ironrdp-session = { path = "vendor/ironrdp-session" }

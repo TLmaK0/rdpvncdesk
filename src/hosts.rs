@@ -21,6 +21,13 @@ pub struct Host {
     pub domain: String,
     pub width: u16,
     pub height: u16,
+    /// Use Network Level Authentication. When false, no credentials are sent and the server
+    /// shows its own sign-in screen.
+    pub nla: bool,
+    /// Keep the password in the system keychain. Named `keychain` in the file so the word
+    /// "password" never appears there (see the toml_roundtrip test).
+    #[serde(rename = "keychain")]
+    pub remember_password: bool,
 }
 
 impl Default for Host {
@@ -32,6 +39,8 @@ impl Default for Host {
             domain: String::new(),
             width: 1280,
             height: 800,
+            nla: true,
+            remember_password: true,
         }
     }
 }
@@ -125,6 +134,8 @@ mod tests {
                 domain: "CORP".into(),
                 width: 1920,
                 height: 1080,
+                nla: false,
+                remember_password: false,
             },
             Host::default(),
         ];
@@ -142,5 +153,7 @@ mod tests {
         let back: HostsFile = toml::from_str("[[host]]\naddress = \"srv\"\n").unwrap();
         assert_eq!(back.hosts[0].address, "srv");
         assert_eq!(back.hosts[0].width, 1280);
+        assert!(back.hosts[0].nla, "hosts saved before the NLA option keep using NLA");
+        assert!(back.hosts[0].remember_password);
     }
 }
