@@ -420,6 +420,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
             } => {
                 self.frame = buffer;
                 self.frame_size = (width.get(), height.get());
+                save_frame_for_debugging(&self.frame, self.frame_size);
                 if let Some((w, _)) = &self.window {
                     w.request_redraw();
                 }
@@ -483,4 +484,19 @@ fn failure_hint(kind: &ConnectorErrorKind) -> Option<&'static str> {
         ),
         _ => None,
     }
+}
+
+/// RDPVNCDESK_SESSION_SCREENSHOT=<file.tga>: keeps the latest remote frame in that file, to check
+/// rendering without screen-recording permission.
+fn save_frame_for_debugging(frame: &[u32], (width, height): (u16, u16)) {
+    let Some(path) = std::env::var_os("RDPVNCDESK_SESSION_SCREENSHOT") else { return };
+    let mut out = vec![0u8, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    out.extend_from_slice(&width.to_le_bytes());
+    out.extend_from_slice(&height.to_le_bytes());
+    out.extend_from_slice(&[24, 0x20]);
+    for px in frame {
+        let [_, r, g, b] = px.to_be_bytes();
+        out.extend_from_slice(&[b, g, r]);
+    }
+    let _ = std::fs::write(path, out);
 }

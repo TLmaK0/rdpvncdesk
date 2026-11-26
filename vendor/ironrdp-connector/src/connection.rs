@@ -841,6 +841,13 @@ fn create_gcc_blocks<'a>(
                         // (GNOME Remote Desktop) wait for that answer forever.
                         | ClientEarlyCapabilityFlags::SUPPORT_SKIP_CHANNELJOIN;
 
+                    // rdpvncdesk patch (issue #9): the graphics pipeline (required by current
+                    // GNOME Remote Desktop) is still experimental: its ClearCodec/Progressive
+                    // output is incomplete, so it is only advertised with RDPVNCDESK_GFX=1.
+                    if std::env::var_os("RDPVNCDESK_GFX").is_some_and(|v| v == "1") {
+                        early_capability_flags |= ClientEarlyCapabilityFlags::SUPPORT_DYN_VC_GFX_PROTOCOL;
+                    }
+
                     // TODO(#136): support for ClientEarlyCapabilityFlags::SUPPORT_STATUS_INFO_PDU
 
                     if max_color_depth == 32 {

@@ -104,6 +104,10 @@ version = "3"
 optional = true
 default-features = false
 
+# rdpvncdesk patch (issue #9): RDP Graphics Pipeline.
+[dependencies.ironrdp-egfx]
+version = "0.3"
+
 [dependencies.ironrdp-cliprdr]
 version = "0.7"
 optional = true

@@ -158,6 +158,15 @@ impl Sequence for ConnectionActivationSequence {
                     return Ok(Written::Nothing);
                 }
 
+                // rdpvncdesk patch (issue #9): GNOME Remote Desktop can still have a Data PDU
+                // in flight (from the session being deactivated) before Demand Active. It belongs
+                // to the old activation: drop it and keep waiting.
+                if matches!(share_control_ctx.pdu, rdp::headers::ShareControlPdu::Data(_)) {
+                    debug!("Skipping Data PDU received during Capabilities Exchange, awaiting Server Demand Active");
+                    self.state = ConnectionActivationState::CapabilitiesExchange;
+                    return Ok(Written::Nothing);
+                }
+
                 let capability_sets = if let rdp::headers::ShareControlPdu::ServerDemandActive(server_demand_active) =
                     share_control_ctx.pdu
                 {

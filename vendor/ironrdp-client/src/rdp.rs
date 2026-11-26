@@ -292,6 +292,8 @@ fn build_connector(
     let _ = cliprdr_factory;
 
     let mut drdynvc = ironrdp_dvc::DrdynvcClient::new()
+        // rdpvncdesk patch (issue #9): RDP Graphics Pipeline.
+        .with_dynamic_channel(crate::gfx::channel())
         .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())))
         .with_dynamic_channel(EchoClient::new());
 
@@ -764,6 +766,20 @@ async fn active_session(
 
     let disconnect_reason = 'outer: loop {
         let outputs = tokio::select! {
+            // rdpvncdesk patch (issue #9): a graphics pipeline frame completed.
+            () = crate::gfx::frame_ready() => {
+                if let Some((buffer, width, height)) = crate::gfx::take_frame() {
+                    output_event_sender
+                        .send(RdpOutputEvent::Image {
+                            buffer,
+                            width: NonZeroU16::new(width).ok_or_else(|| ironrdp_session::general_err!("width is zero"))?,
+                            height: NonZeroU16::new(height).ok_or_else(|| ironrdp_session::general_err!("height is zero"))?,
+                        })
+                        .await
+                        .map_err(|e| ironrdp_session::custom_err!("output_event_sender", e))?;
+                }
+                Vec::new()
+            }
             frame = reader.read_pdu() => {
                 let (action, payload) = frame.map_err(|e| ironrdp_session::custom_err!("read frame", e))?;
                 trace!(?action, frame_length = payload.len(), "Frame received");
