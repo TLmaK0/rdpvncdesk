@@ -97,6 +97,15 @@ Linux also needs: `libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev li
 
 Prebuilt binaries for every OS are produced by GitHub Actions on each push (artifacts) and attached to releases for `v*` tags.
 
+## Experimental and diagnostic switches
+
+| Env var | Effect |
+|---|---|
+| `RDPVNCDESK_GFX=1` | Advertise the RDP Graphics Pipeline (needed by current GNOME Remote Desktop). Incomplete: see #9, #10 |
+| `RDPVNCDESK_COMPRESSION=1` | Enable bulk compression (off until #6 is verified against GNOME) |
+| `RDPVNCDESK_SCREENSHOT=<file.tga>` | Save a capture of the connection manager window |
+| `RDPVNCDESK_SESSION_SCREENSHOT=<file.tga>` | Keep the latest remote frame of a session in a file |
+
 ## Security note
 
 Like IronRDP's own viewer, the server's TLS certificate is **not validated** yet. Only connect to servers on networks you trust.
