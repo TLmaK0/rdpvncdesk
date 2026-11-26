@@ -138,6 +138,9 @@ pub struct ClientConnector {
     pub static_channels: StaticChannelSet,
     /// MCS message channel ID assigned by the server, once negotiated.
     pub message_channel_id: Option<u16>,
+    /// rdpvncdesk patch (issues #1, #14): connect-time bandwidth measurement in progress
+    /// (start time, payload bytes received), answered when the server sends Measure Stop.
+    bandwidth_measure: Option<(std::time::Instant, u32)>,
 }
 
 impl ClientConnector {
@@ -148,6 +151,7 @@ impl ClientConnector {
             client_addr,
             static_channels: StaticChannelSet::new(),
             message_channel_id: None,
+            bandwidth_measure: None,
         }
     }
 
@@ -565,6 +569,7 @@ impl Sequence for ClientConnector {
                 if let Some((message_channel_id, data)) = message_channel_pdu {
                     if let Ok(autodetect) = decode::<rdp::autodetect::AutoDetectReqPdu>(&data.user_data) {
                         let written = respond_to_connect_time_autodetect(
+                            &mut self.bandwidth_measure,
                             autodetect.request,
                             message_channel_id,
                             user_channel_id,
@@ -747,6 +752,7 @@ pub fn encode_send_data_request<T: Encode>(
 }
 
 fn respond_to_connect_time_autodetect(
+    bandwidth_measure: &mut Option<(std::time::Instant, u32)>,
     request: rdp::autodetect::AutoDetectRequest,
     message_channel_id: u16,
     user_channel_id: u16,
@@ -760,14 +766,38 @@ fn respond_to_connect_time_autodetect(
             let written = encode_send_data_request(user_channel_id, message_channel_id, &response, output)?;
             Written::from_size(written)
         }
-        // Only RTT is answered at connect time. A connect-time Bandwidth Measure
-        // Stop ([MS-RDPBCGR] 2.2.14.1.4) is defined to warrant a Bandwidth Measure
-        // Results reply, and the Network Characteristics Result is informational.
-        // We deliberately send neither: connect-time auto-detect is informational
-        // and the server proceeds to licensing whether or not it receives them, so
-        // skipping them does not stall the sequence. Full connect-time bandwidth
-        // measurement (replying to Bandwidth Measure Stop with Bandwidth Measure
-        // Results) is left for a follow-up.
+        // rdpvncdesk patch (issues #1, #14): answer the bandwidth measurement.
+        // FreeRDP-based servers (GNOME Remote Desktop) wait for the Bandwidth Measure
+        // Results ([MS-RDPBCGR] 2.2.14.2.2) after a connect-time Measure Stop; upstream
+        // didn't send it, so those servers hung.
+        AutoDetectRequest::BandwidthMeasureStart { .. } => {
+            *bandwidth_measure = Some((std::time::Instant::now(), 0));
+            Ok(Written::Nothing)
+        }
+        AutoDetectRequest::BandwidthMeasurePayload { payload, .. } => {
+            if let Some((_, bytes)) = bandwidth_measure.as_mut() {
+                *bytes = bytes.saturating_add(u32::try_from(payload.len()).unwrap_or(u32::MAX));
+            }
+            Ok(Written::Nothing)
+        }
+        AutoDetectRequest::BandwidthMeasureStop {
+            sequence_number, payload, ..
+        } => {
+            let (started, mut bytes) = bandwidth_measure.take().unwrap_or((std::time::Instant::now(), 0));
+            if let Some(payload) = payload {
+                bytes = bytes.saturating_add(u32::try_from(payload.len()).unwrap_or(u32::MAX));
+            }
+            let time_delta_ms = u32::try_from(started.elapsed().as_millis()).unwrap_or(u32::MAX);
+            let response = AutoDetectRspPdu::new(AutoDetectResponse::BandwidthMeasureResults {
+                sequence_number,
+                // RDP_BW_RESULTS_RESPONSE_TYPE_CONNECTTIME
+                response_type: 0x0003,
+                time_delta_ms,
+                byte_count: bytes,
+            });
+            let written = encode_send_data_request(user_channel_id, message_channel_id, &response, output)?;
+            Written::from_size(written)
+        }
         _ => Ok(Written::Nothing),
     }
 }
@@ -836,9 +866,9 @@ fn create_gcc_blocks<'a>(
                     let mut early_capability_flags = ClientEarlyCapabilityFlags::VALID_CONNECTION_TYPE
                         | ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU
                         | ClientEarlyCapabilityFlags::STRONG_ASYMMETRIC_KEYS
-                        // rdpvncdesk patch (issue #1): SUPPORT_NET_CHAR_AUTODETECT removed. We don't
-                        // answer a connect-time Bandwidth Measure Stop, and FreeRDP-based servers
-                        // (GNOME Remote Desktop) wait for that answer forever.
+                        // rdpvncdesk patch (issues #1, #14): kept, now that the bandwidth
+                        // measurement is answered (some GNOME versions need autodetection).
+                        | ClientEarlyCapabilityFlags::SUPPORT_NET_CHAR_AUTODETECT
                         | ClientEarlyCapabilityFlags::SUPPORT_SKIP_CHANNELJOIN;
 
                     // rdpvncdesk patch (issue #9): the graphics pipeline (required by current
