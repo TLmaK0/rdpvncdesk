@@ -12,9 +12,13 @@ pub const TEXT: Color32 = Color32::from_rgb(15, 23, 42);
 pub const TEXT_MUTED: Color32 = Color32::from_rgb(71, 85, 105);
 pub const DANGER: Color32 = Color32::from_rgb(185, 28, 28);
 
-/// Whether this platform can blur the desktop behind a transparent window.
+/// Whether to blur the desktop behind a transparent window.
+///
+/// Off for now (issue #11): window-vibrancy puts the blur view inside the content view, on top
+/// of eframe's OpenGL drawing, so the window showed nothing on macOS. The painted gradient is
+/// used everywhere until the blur can sit behind the GL surface.
 pub const fn blur_supported() -> bool {
-    cfg!(any(target_os = "macos", windows))
+    false
 }
 
 /// Applies the native blur behind the window. Returns true when it worked.
