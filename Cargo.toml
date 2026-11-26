@@ -37,6 +37,9 @@ serde = { version = "1", features = ["derive"] }
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSAppleEventManager", "NSAppleEventDescriptor", "NSString"] }
 
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+window-vibrancy = "0.8.1"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

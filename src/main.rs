@@ -7,6 +7,7 @@ mod keymap;
 mod launcher;
 mod logfile;
 mod phase;
+mod theme;
 
 use anyhow::Context as _;
 use clap::Parser;
