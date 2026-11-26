@@ -980,6 +980,7 @@ async fn active_session(
                         {
                             debug!(?desktop_size, "Deactivation-Reactivation Sequence completed");
                             image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
+                            let bulk_decompressor = active_stage.take_bulk_decompressor();
                             active_stage.set_fastpath_processor(
                                 fast_path::ProcessorBuilder {
                                     io_channel_id: connection_activation.io_channel_id(),
@@ -987,7 +988,9 @@ async fn active_session(
                                     share_id,
                                     enable_server_pointer,
                                     pointer_software_rendering,
-                                    bulk_decompressor: None,
+                                    // rdpvncdesk patch (issue #6): keep the decompressor; with
+                                    // `None` every later compressed update was misread.
+                                    bulk_decompressor,
                                 }
                                 .build(),
                             );

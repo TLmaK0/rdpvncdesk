@@ -144,10 +144,11 @@ fn main() -> anyhow::Result<()> {
         .with_client_name(client_name())
         .with_platform(current_platform())
         .with_credssp(!cli.no_nla)
-        // ironrdp-client 0.1.0 drops the bulk decompressor on Deactivation-Reactivation (which
-        // GNOME Remote Desktop does right after connecting), so every later compressed update
-        // is misread. Without advertising compression the server never compresses.
-        .with_compression(false);
+        // Bulk compression stays off until the vendored fix for issue #6 (ironrdp-client used to
+        // drop the decompressor on Deactivation-Reactivation, which GNOME Remote Desktop does
+        // right after connecting) is verified against such a server. RDPVNCDESK_COMPRESSION=1
+        // turns it on for that test.
+        .with_compression(std::env::var_os("RDPVNCDESK_COMPRESSION").is_some_and(|v| v == "1"));
     if let Some(domain) = cli.domain {
         builder = builder.with_domain(domain);
     }

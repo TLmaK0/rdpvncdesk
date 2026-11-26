@@ -46,3 +46,4 @@ strip = true
 [patch.crates-io]
 ironrdp-connector = { path = "vendor/ironrdp-connector" }
 ironrdp-client = { path = "vendor/ironrdp-client" }
+ironrdp-session = { path = "vendor/ironrdp-session" }
