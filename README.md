@@ -77,7 +77,7 @@ rdpvncdesk 10.0.0.5:3390 -u alice -d CORP --width 1920 --height 1080
 **Ctrl+Alt+Del:** press **Ctrl+Alt+End** (like mstsc); on macOS **Ctrl+Option+Delete** also works.
 
 **macOS:** **Cmd+C/V/X/A/Z/Y/S/F** are sent as Ctrl+key; Cmd with any other key, or alone, acts as the Windows key.
-Clipboard sharing between the local and remote machine is not implemented yet.
+Plain-text clipboard is shared between the local and remote machine (on Windows by IronRDP's native backend).
 
 The window can be resized freely; the remote image is scaled to fit.
 
@@ -104,7 +104,7 @@ Like IronRDP's own viewer, the server's TLS certificate is **not validated** yet
 ## Roadmap
 
 - [ ] Server certificate validation / trust-on-first-use
-- [ ] Clipboard
+- [x] Clipboard (plain text)
 - [ ] Dynamic resolution on window resize
 - [x] Connection manager with saved hosts and keychain passwords
 - [x] rdp:// deep links
